@@ -1,0 +1,140 @@
+{
+  "emitLegacyScripts": false,
+  "name": "penguingame",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Source": {
+        "$className": "Folder",
+        "Features": {
+          "$className": "Folder",
+          "App": {
+            "$className": "Folder",
+            "root.story": {
+              "$path": "src/features/app/root.story.luau"
+            },
+            "RootUi": {
+              "$path": "src/features/app/RootUi.luau"
+            }
+          },
+          "Tables": {
+            "$className": "Folder",
+            "TableCameraClient": {
+              "$path": "src/features/Tables/TableCameraClient.luau"
+            },
+            "TableServiceClient": {
+              "$path": "src/features/Tables/TableServiceClient.luau"
+            },
+            "UI": {
+              "$className": "Folder",
+              "TableRoot": {
+                "$path": "src/features/Tables/UI/TableRoot.luau"
+              }
+            },
+            "Utils": {
+              "$className": "Folder",
+              "HexGrids": {
+                "$path": "src/features/Tables/Utils/HexGrids.luau"
+              }
+            }
+          }
+        },
+        "Core": {
+          "$className": "Folder",
+          "UI": {
+            "$className": "Folder",
+            "Primitives": {
+              "$className": "Folder",
+              "Button": {
+                "$path": "src/core/UI/Primitives/Button.luau"
+              },
+              "Frame": {
+                "$path": "src/core/UI/Primitives/Frame.luau"
+              },
+              "ScrollingFrame": {
+                "$path": "src/core/UI/Primitives/ScrollingFrame.luau"
+              },
+              "Textlabel": {
+                "$path": "src/core/UI/Primitives/Textlabel.luau"
+              },
+              "UICorner": {
+                "$path": "src/core/UI/Primitives/UICorner.luau"
+              },
+              "UIGradient": {
+                "$path": "src/core/UI/Primitives/UIGradient.luau"
+              },
+              "UIGridLayout": {
+                "$path": "src/core/UI/Primitives/UIGridLayout.luau"
+              },
+              "UIListLayout": {
+                "$path": "src/core/UI/Primitives/UIListLayout.luau"
+              },
+              "UIPadding": {
+                "$path": "src/core/UI/Primitives/UIPadding.luau"
+              },
+              "UIStroke": {
+                "$path": "src/core/UI/Primitives/UIStroke.luau"
+              }
+            }
+          },
+          "Util": {
+            "$className": "Folder",
+            "RemoveKeys": {
+              "$path": "src/core/Util/RemoveKeys.luau"
+            }
+          }
+        },
+        "Game": {
+          "$className": "Folder",
+          "Items": {
+            "$className": "Folder",
+            "DataTemplate": {
+              "$path": "src/game/Items/DataTemplate.luau"
+            }
+          }
+        },
+        "StartUp": {
+          "$className": "Folder",
+          "MountUI": {
+            "$path": "src/startup/MountUI.luau"
+          },
+          "Client": {
+            "$path": "src/startup/Client.client.luau"
+          }
+        }
+      },
+      "Packages": {
+        "$path": "Packages"
+      }
+    },
+    "ServerScriptService": {
+      "Features": {
+        "$className": "Folder",
+        "Tables": {
+          "$className": "Folder",
+          "Classes": {
+            "$className": "Folder",
+            "TableServer": {
+              "$path": "src/features/Tables/Classes/TableServer.luau"
+            }
+          },
+          "TabelServiceServer": {
+            "$path": "src/features/Tables/TabelServiceServer.luau"
+          }
+        }
+      },
+      "Core": {
+        "$className": "Folder"
+      },
+      "Game": {
+        "$className": "Folder"
+      },
+      "StartUp": {
+        "$className": "Folder",
+        "Server": {
+          "$path": "src/startup/Server.server.luau"
+        }
+      }
+    }
+  }
+}
