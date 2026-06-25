@@ -9,7 +9,7 @@ local Networker = require(Packages.Networker)
 local Signal = require(Packages.Signal)
 
 local HEX_RADIUS = 2
-local HEX_SIZE = 3
+local HEX_SIZE = 2.5
 local SUPPORT_RADIUS = 1
 local HIT_RADIUS = 1
 local HAMMER_SWING_TIME = 0.4
@@ -132,7 +132,7 @@ function TableServer._onOccupantChanged(self: Table, seat: Seat): ()
 	if self.State == "Idle" and self.OccupiedCount >= self.SeatCount then
 		task.defer(function()
 			if self.State == "Idle" and self.OccupiedCount >= self.SeatCount then
-				self.State = "InProgress" -- Optimistically set to prevent race conditions
+				self.State = "InProgress"
 				self:StartGame()
 			end
 		end)
@@ -162,7 +162,8 @@ function TableServer.StartGame(self: Table): ()
 end
 
 function TableServer._generateBoard(self: Table): ()
-	local origin = self.Model:GetPivot().Position + Vector3.new(0, 5, 0)
+	local pivot = self.Model:GetPivot()
+	local offset = Vector3.new(0, 5, 0)
 
 	self.Hexes = {}
 	self.SupportRemaining = 0
@@ -177,7 +178,10 @@ function TableServer._generateBoard(self: Table): ()
 		part.Size = Vector3.new(HEX_SIZE * 1.8, 1, HEX_SIZE * 1.8)
 		part.Anchored = true
 		part.Color = if isSupport then Color3.fromRGB(173, 216, 230) else Color3.fromRGB(220, 240, 250)
-		part.CFrame = CFrame.new(origin + HexGrid.AxialToWorld(coord.Q, coord.R, HEX_SIZE))
+
+		local localPos = HexGrid.AxialToWorld(coord.Q, coord.R, HEX_SIZE) + offset
+		part.CFrame = pivot * CFrame.new(localPos)
+
 		self.RoundJanitor:Add(part)
 		part.Parent = self.Model
 
@@ -208,7 +212,7 @@ function TableServer._generateBoard(self: Table): ()
 	penguin.Size = Vector3.new(3, 3, 3)
 	penguin.Color = Color3.fromRGB(245, 245, 245)
 	penguin.Anchored = true
-	penguin.CFrame = CFrame.new(origin + Vector3.new(0, 2.5, 0))
+	penguin.CFrame = pivot * CFrame.new(offset + Vector3.new(0, 2.5, 0))
 	self.RoundJanitor:Add(penguin)
 	penguin.Parent = self.Model
 	self.Penguin = penguin
@@ -249,7 +253,11 @@ function TableServer._swingAndBreak(self: Table, hex: Hex): ()
 end
 
 function TableServer._advanceTurn(self: Table): ()
-	self.TurnIndex = (self.TurnIndex % #self.Seats) + 1
+	local startingTurn = self.TurnIndex
+	repeat
+		self.TurnIndex = (self.TurnIndex % #self.Seats) + 1
+	until self:GetCurrentPlayer() ~= nil or self.TurnIndex == startingTurn
+
 	self.Networker:setAll("CurrentTurnPlayer", self:GetCurrentPlayer())
 end
 

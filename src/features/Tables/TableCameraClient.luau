@@ -91,7 +91,7 @@ function TableCameraClient.Init(): ()
 	if renderConnection then
 		return
 	end
-	renderConnection = RunService.Heartbeat:Connect(StepCamera)
+	renderConnection = RunService.RenderStepped:Connect(StepCamera)
 end
 
 function TableCameraClient.Destroy(): ()
