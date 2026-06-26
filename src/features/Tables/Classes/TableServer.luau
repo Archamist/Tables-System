@@ -9,20 +9,19 @@ local Janitor = require(Packages.Janitor)
 local Networker = require(Packages.Networker)
 local Signal = require(Packages.Signal)
 local HexTemplate = ReplicatedStorage.Assets.Misc.Hexagon
+local PenguinTemplate = ReplicatedStorage.Assets.Misc.Penguin
 
 local HAMMER_SWING_TIME = 0.4
 local SEAT_RELOCK_DELAY = 3
--- constants
 local HEX_RADIUS = 3
-local BASE_HEX_SIZE = 2.5 -- size the Hexagon asset was modeled at (flush, no gap)
-local HEX_SIZE = 0.5 -- ← lower this to shrink the whole board
-local TILE_GAP_SCALE = 0.9 -- ← lower this for a bigger seam between tiles
+local BASE_HEX_SIZE = 2.5
+local HEX_SIZE = 0.5
+local TILE_GAP_SCALE = 0.9
 local HIT_RADIUS = 1
-local BOARD_HEIGHT_OFFSET = 1 -- ↕ raise/lower so hexes rest flush on the table's surface (depends on your table model — tune this in Studio)
-local PENGUIN_SIZE = 1 -- ↓ lower this to shrink the penguin relative to the board
-local TILE_YAW_JITTER = math.rad(5) -- ± random spin per tile so the board doesn't look laser-cut/uniform
-local TILE_HEIGHT_JITTER = 0.04 -- ± random height wobble per tile, in studs
-local PENGUIN_FALL_DISTANCE = 3 -- ↓ how far the penguin must drop below its resting height before the round counts as over
+local BOARD_HEIGHT_OFFSET = 1
+local PENGUIN_SIZE = 1
+local TILE_YAW_JITTER = math.rad(5)
+local TILE_HEIGHT_JITTER = 0.04
 
 export type TableState = "Idle" | "InProgress" | "Ended"
 
@@ -45,11 +44,10 @@ export type Table = typeof(setmetatable(
 		OccupiedCount: number,
 		State: TableState,
 		Hexes: { [string]: Hex },
-		Penguin: BasePart?,
+		Penguin: Model?,
 		TurnIndex: number,
 		_roundToken: number,
 		_penguinHasFallen: boolean,
-		_penguinRestY: number,
 		Janitor: Janitor.Janitor,
 		RoundJanitor: Janitor.Janitor,
 		Networker: any,
@@ -72,7 +70,6 @@ function TableServer.new(tableModel: Model): Table
 	self.TurnIndex = 1
 	self._roundToken = 0
 	self._penguinHasFallen = false
-	self._penguinRestY = 0
 	self.Janitor = Janitor.new()
 	self.RoundJanitor = Janitor.new()
 	self.Started = Signal.new()
@@ -93,6 +90,17 @@ function TableServer.new(tableModel: Model): Table
 	self.Janitor:Add(self.RoundJanitor, "Destroy")
 	self.Janitor:Add(self.Started, "Destroy")
 	self.Janitor:Add(self.Ended, "Destroy")
+	self.Janitor:Add(Players.PlayerRemoving:Connect(function(leavingPlayer)
+		if self.State ~= "InProgress" then
+			return
+		end
+		for _, seat in self.Seats do
+			if self.Occupants[seat] == leavingPlayer then
+				self:EndGame(true)
+				return
+			end
+		end
+	end))
 
 	return self
 end
@@ -203,6 +211,7 @@ function TableServer._generateBoard(self: Table): ()
 		if hexPart:IsA("BasePart") then
 			hexPart.Color = math.random() < 0.7 and ICE_BLUE or DARK_BLUE
 		end
+
 		local clickDetector = Instance.new("ClickDetector")
 		clickDetector.MaxActivationDistance = 20
 		clickDetector.Parent = hexPart
@@ -219,31 +228,60 @@ function TableServer._generateBoard(self: Table): ()
 		}
 	end
 
-	local penguin = Instance.new("Part")
+	local penguin = PenguinTemplate:Clone()
 	penguin.Name = "Penguin"
-	penguin.Shape = Enum.PartType.Ball
-	penguin.Size = Vector3.new(PENGUIN_SIZE, PENGUIN_SIZE, PENGUIN_SIZE)
-	penguin.Color = Color3.fromRGB(245, 245, 245)
-	penguin.CanCollide = true
-	penguin.Anchored = false
-	penguin.CFrame = pivot * CFrame.new(offset + Vector3.new(0, PENGUIN_SIZE / 2 + 0.1, 0))
+	penguin:ScaleTo(PENGUIN_SIZE)
+
+	for _, descendant in penguin:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.CanCollide = true
+		end
+	end
+	task.delay(0.3, function()
+		for _, descendant in penguin:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.Anchored = false
+			end
+		end
+	end)
+	local _, boundingSize = penguin:GetBoundingBox()
+	penguin:PivotTo(pivot * CFrame.new(offset + Vector3.new(0, boundingSize.Y / 2 + 0.1, 0)))
 	self.RoundJanitor:Add(penguin)
 	penguin.Parent = self.Model
 	self.Penguin = penguin
 
-	self._penguinRestY = offset.Y + PENGUIN_SIZE / 2 + 0.1
 	self:_startPenguinWatch()
 end
 
 function TableServer._startPenguinWatch(self: Table): ()
-	local pivot = self.Model:GetPivot()
+	local hexPartLookup: { [BasePart]: Hex } = {}
+	local hexParts: { BasePart } = {}
+
+	for _, hex in self.Hexes do
+		hexPartLookup[hex.Part] = hex
+		table.insert(hexParts, hex.Part)
+	end
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterDescendantsInstances = hexParts
+	rayParams.FilterType = Enum.RaycastFilterType.Include
+
 	local conn: RBXScriptConnection
 	conn = RunService.Heartbeat:Connect(function()
 		if not self.Penguin or self.State ~= "InProgress" then
 			return
 		end
-		local localY = pivot:PointToObjectSpace(self.Penguin.Position).Y
-		if localY < self._penguinRestY - PENGUIN_FALL_DISTANCE then
+
+		local origin = self.Penguin:GetPivot().Position
+		local result = workspace:Raycast(origin, Vector3.new(0, -10, 0), rayParams)
+
+		if not result then
+			self:_penguinFalls()
+			return
+		end
+
+		local hitHex = hexPartLookup[result.Instance :: BasePart]
+		if not hitHex or hitHex.Broken then
 			self:_penguinFalls()
 		end
 	end)
@@ -312,7 +350,7 @@ end
 
 function TableServer._penguinFalls(self: Table): ()
 	if not self.Penguin or self._penguinHasFallen then
-		return -- already triggered — don't fire this twice
+		return
 	end
 	self._penguinHasFallen = true
 

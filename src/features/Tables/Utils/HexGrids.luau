@@ -2,8 +2,6 @@ local HexGrid = {}
 
 export type AxialCoord = { Q: number, R: number }
 
---Returns every axial coordinate within `radius` rings of the origin (a hexagon-shaped disk).
-
 function HexGrid.GenerateDisk(radius: number): { AxialCoord }
 	local coords = {}
 	for q = -radius, radius do
@@ -16,18 +14,12 @@ function HexGrid.GenerateDisk(radius: number): { AxialCoord }
 	return coords
 end
 
---Hex distance between two axial coordinates (number of steps to walk between them).
-
 function HexGrid.Distance(q1: number, r1: number, q2: number, r2: number): number
 	local dq = q1 - q2
 	local dr = r1 - r2
 	return (math.abs(dq) + math.abs(dr) + math.abs(dq + dr)) / 2
 end
 
---[[
-	Converts an axial coordinate to a local-space world offset for a flat-top hex grid.
-	`size` is the hex's center-to-corner radius in studs.
-]]
 function HexGrid.AxialToWorld(q: number, r: number, size: number): Vector3
 	local x = size * (3 / 2 * q)
 	local z = size * (math.sqrt(3) / 2 * q + math.sqrt(3) * r)

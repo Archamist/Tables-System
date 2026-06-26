@@ -2,6 +2,7 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Packages = ReplicatedStorage.Packages
@@ -14,30 +15,18 @@ local LocalPlayer = Players.LocalPlayer
 type TableServerState = "Idle" | "InProgress" | "Ended"
 type Connection = { Disconnect: (self: any) -> () }
 
-local HEX_SIZE = 0.5
-local BOARD_HEIGHT_OFFSET = 1
-local PIVOT_HEIGHT = 5
-local ARM_LENGTH = 3
-
-local SWING_START = math.rad(-90)
-local SWING_IMPACT = math.rad(8)
-local SWING_RETRACT = math.rad(-52)
-local PHASE_HOLD = 0.07
-local ANIM_TOTAL = 0.85
-
-local function SpringStep(
-	pos: number,
-	vel: number,
-	target: number,
-	stiffness: number,
-	damping: number,
-	dt: number
-): (number, number)
-	local force = (target - pos) * stiffness - vel * damping
-	vel = vel + force * dt
-	pos = pos + vel * dt
-	return pos, vel
-end
+local HEX_SIZE = 0.5 -- must match HEX_SIZE in TableServer's board generation
+local BOARD_HEIGHT_OFFSET = 1 -- must match BOARD_HEIGHT_OFFSET in TableServer
+local ARM_LENGTH = 0.5
+local MIN_POP_SCALE = 0.05
+local POP_TIME = 0.4
+local SWING_TIME = 0.3
+local ARM_PIVOT_HEIGHT = 0.5
+local SWING_START_ANGLE = -math.rad(180) -- 55
+local SWING_END_ANGLE = -math.rad(135)
+local GLIDE_TIME = 0.3
+local APPEAR_OFFSET = 5
+local APPEAR_HEIGHT = 3
 
 local function HexToWorld(tableModel: Model, q: number, r: number): Vector3
 	local pivot = tableModel:GetPivot()
@@ -48,67 +37,70 @@ end
 
 local Hammer = ReplicatedStorage.Assets.Misc.Hammer
 
-local function PlayHammerSwing(tableModel: Model, q: number, r: number): ()
+local function TweenModel(
+	duration: number,
+	easingStyle: Enum.EasingStyle,
+	easingDirection: Enum.EasingDirection,
+	onStep: (alpha: number) -> ()
+): ()
+	local elapsed = 0
+	while elapsed < duration do
+		elapsed += RunService.RenderStepped:Wait()
+		local alpha = TweenService:GetValue(math.clamp(elapsed / duration, 0, 1), easingStyle, easingDirection)
+		onStep(alpha)
+	end
+	onStep(1)
+end
+
+local function PlayHammerSwing(tableModel: Model, q: number, r: number, onComplete: (() -> ())?): ()
 	local tilePos = HexToWorld(tableModel, q, r)
 	local tableCenter = tableModel:GetPivot().Position
+	local toTile = tilePos - tableCenter
+	local flatToTile = Vector3.new(toTile.X, 0, toTile.Z)
+	local swingDir = if flatToTile.Magnitude > 0.01 then flatToTile.Unit else Vector3.new(1, 0, 0)
 
-	local flat = Vector3.new(tableCenter.X - tilePos.X, 0, tableCenter.Z - tilePos.Z)
-	local swingAxis: Vector3 = if flat.Magnitude > 0.01
-		then flat.Unit:Cross(Vector3.new(0, 1, 0)).Unit
-		else Vector3.new(1, 0, 0)
+	local pivotCFrame = tableModel:GetPivot()
+	local side = if q < 0 then -1 else 1
+	local perpAxis = (pivotCFrame.LookVector * side).Unit
+	local armPivot = tilePos + Vector3.new(0, ARM_PIVOT_HEIGHT, 0)
 
-	local pivotPos = tilePos + Vector3.new(0, PIVOT_HEIGHT, 0)
-
-	local angle = SWING_START
-	local angleVel = 0.0
-
-	local function GetHammerCFrame(): CFrame
-		local rot = CFrame.fromAxisAngle(swingAxis, angle)
-		local armDir = rot * Vector3.new(0, -1, 0)
-		local center = pivotPos + armDir * (ARM_LENGTH * 0.5)
-		return CFrame.new(center) * rot
+	local function HammerCF(angle: number, pivot: Vector3?): CFrame
+		local p = pivot or armPivot
+		local offset = CFrame.fromAxisAngle(perpAxis, angle) * Vector3.new(0, -ARM_LENGTH, 0)
+		return CFrame.new(p + offset) * CFrame.fromAxisAngle(perpAxis, angle)
 	end
 
-	local hammer = Hammer:Clone() :: Model
-	hammer.Parent = Workspace
-	hammer:PivotTo(GetHammerCFrame())
+	task.spawn(function()
+		local hammer = Hammer:Clone() :: Model
+		hammer.Parent = Workspace
 
-	local retracting = false
-	local nearImpactTime = 0.0
-	local totalTimer = 0.0
+		local appearPivot = armPivot + swingDir * APPEAR_OFFSET + Vector3.new(0, APPEAR_HEIGHT, 0)
+		local appearCF = HammerCF(SWING_START_ANGLE, appearPivot)
+		local preSwingCF = HammerCF(SWING_START_ANGLE)
 
-	local conn: RBXScriptConnection
-	conn = RunService.RenderStepped:Connect(function(dt: number)
-		totalTimer += dt
-		if totalTimer >= ANIM_TOTAL then
-			conn:Disconnect()
-			hammer:Destroy()
-			return
+		hammer:ScaleTo(MIN_POP_SCALE)
+		hammer:PivotTo(appearCF)
+		TweenModel(POP_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out, function(alpha)
+			hammer:ScaleTo(MIN_POP_SCALE + (1 - MIN_POP_SCALE) * alpha)
+		end)
+
+		TweenModel(GLIDE_TIME, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, function(alpha)
+			hammer:PivotTo(appearCF:Lerp(preSwingCF, alpha))
+		end)
+
+		TweenModel(SWING_TIME, Enum.EasingStyle.Cubic, Enum.EasingDirection.In, function(alpha)
+			hammer:PivotTo(HammerCF(SWING_START_ANGLE + (SWING_END_ANGLE - SWING_START_ANGLE) * alpha))
+		end)
+
+		if onComplete then
+			onComplete()
 		end
 
-		local target: number
-		local stiffness: number
-		local damping: number
+		TweenModel(POP_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, function(alpha)
+			hammer:ScaleTo(1 - (1 - MIN_POP_SCALE) * alpha)
+		end)
 
-		if retracting then
-			target = SWING_RETRACT
-			stiffness = 105
-			damping = 19
-		else
-			target = SWING_IMPACT
-			stiffness = 185
-			damping = 14
-
-			if angle >= SWING_IMPACT - math.rad(4) then
-				nearImpactTime += dt
-				if nearImpactTime >= PHASE_HOLD then
-					retracting = true
-				end
-			end
-		end
-
-		angle, angleVel = SpringStep(angle, angleVel, target, stiffness, damping, dt)
-		hammer:PivotTo(GetHammerCFrame())
+		hammer:Destroy()
 	end)
 end
 
@@ -119,6 +111,7 @@ TableServiceClient.ActiveSeat = source(nil :: Seat?)
 TableServiceClient.RoundState = source("Idle" :: TableServerState)
 TableServiceClient.CurrentTurnPlayer = source(nil :: Player?)
 TableServiceClient.LastResult = source(nil :: { Aborted: boolean }?)
+TableServiceClient.IsSwinging = source(false)
 
 local activeNetworker: any = nil
 local activeConnections: { Connection } = {}
@@ -130,7 +123,12 @@ function Handlers.OnHammerSwing(_self: any, _player: Player, q: number, r: numbe
 	if not tableModel then
 		return
 	end
-	PlayHammerSwing(tableModel, q, r)
+
+	TableServiceClient.IsSwinging(true)
+
+	PlayHammerSwing(tableModel, q, r, function()
+		TableServiceClient.IsSwinging(false)
+	end)
 end
 
 function Handlers.OnPenguinFall(_self: any, _loser: Player?): () end
@@ -157,6 +155,7 @@ local function Cleanup(): ()
 	TableServiceClient.RoundState("Idle")
 	TableServiceClient.CurrentTurnPlayer(nil)
 	TableServiceClient.LastResult(nil)
+	TableServiceClient.IsSwinging(false)
 end
 
 local function FindTableModel(seat: Seat): Model?
