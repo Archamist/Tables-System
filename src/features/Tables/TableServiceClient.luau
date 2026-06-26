@@ -14,25 +14,17 @@ local LocalPlayer = Players.LocalPlayer
 type TableServerState = "Idle" | "InProgress" | "Ended"
 type Connection = { Disconnect: (self: any) -> () }
 
--- ── Tuning ─────────────────────────────────────────────────────────────────
--- HEX_SIZE:     centre-to-centre tile spacing in studs.
--- PIVOT_HEIGHT: height above the tile where the swing hinge sits.
--- ARM_LENGTH:   distance from hinge to the Hammer model's pivot centre.
--- Assumes the model's local +Y runs handle→head (head at -Y end).
-local HEX_SIZE = 2.5
+local HEX_SIZE = 0.5
+local BOARD_HEIGHT_OFFSET = 1
 local PIVOT_HEIGHT = 5
 local ARM_LENGTH = 3
 
--- Swing angles in radians; 0 = straight down, negative = tilted back.
 local SWING_START = math.rad(-90)
 local SWING_IMPACT = math.rad(8)
 local SWING_RETRACT = math.rad(-52)
-local PHASE_HOLD = 0.07 -- seconds near impact before retracting
-local ANIM_TOTAL = 0.85 -- lifetime of the Hammer clone
+local PHASE_HOLD = 0.07
+local ANIM_TOTAL = 0.85
 
--- ── Spring helper ──────────────────────────────────────────────────────────
--- Semi-implicit Euler: more stable than explicit at large stiffness values.
--- Returns (newPos, newVel).
 local function SpringStep(
 	pos: number,
 	vel: number,
@@ -47,24 +39,19 @@ local function SpringStep(
 	return pos, vel
 end
 
--- ── Hex → world ────────────────────────────────────────────────────────────
--- Flat-top axial. Swap lx/lz formulas for pointy-top grids.
 local function HexToWorld(tableModel: Model, q: number, r: number): Vector3
 	local pivot = tableModel:GetPivot()
 	local lx = HEX_SIZE * 1.5 * q
 	local lz = HEX_SIZE * (0.5 * math.sqrt(3) * q + math.sqrt(3) * r)
-	return pivot:PointToWorldSpace(Vector3.new(lx, 0, lz))
+	return pivot:PointToWorldSpace(Vector3.new(lx, BOARD_HEIGHT_OFFSET, lz))
 end
 
--- ── Hammer swing ──────────────────────────────────────────────────────────
 local Hammer = ReplicatedStorage.Assets.Misc.Hammer
 
 local function PlayHammerSwing(tableModel: Model, q: number, r: number): ()
 	local tilePos = HexToWorld(tableModel, q, r)
 	local tableCenter = tableModel:GetPivot().Position
 
-	-- Swing axis: horizontal, perpendicular to tile→centre.
-	-- Arc therefore lives in the vertical plane through the tile.
 	local flat = Vector3.new(tableCenter.X - tilePos.X, 0, tableCenter.Z - tilePos.Z)
 	local swingAxis: Vector3 = if flat.Magnitude > 0.01
 		then flat.Unit:Cross(Vector3.new(0, 1, 0)).Unit
@@ -104,13 +91,10 @@ local function PlayHammerSwing(tableModel: Model, q: number, r: number): ()
 		local damping: number
 
 		if retracting then
-			-- Near-critical damping: smooth return, no bounce.
 			target = SWING_RETRACT
 			stiffness = 105
 			damping = 19
 		else
-			-- Underdamped swing (ζ ≈ 0.51): fast with a small natural
-			-- overshoot at impact that reads as a satisfying hit.
 			target = SWING_IMPACT
 			stiffness = 185
 			damping = 14
@@ -128,11 +112,10 @@ local function PlayHammerSwing(tableModel: Model, q: number, r: number): ()
 	end)
 end
 
--- ── Module ────────────────────────────────────────────────────────────────
-
 local TableServiceClient = {}
 
 TableServiceClient.ActiveTable = source(nil :: Model?)
+TableServiceClient.ActiveSeat = source(nil :: Seat?)
 TableServiceClient.RoundState = source("Idle" :: TableServerState)
 TableServiceClient.CurrentTurnPlayer = source(nil :: Player?)
 TableServiceClient.LastResult = source(nil :: { Aborted: boolean }?)
@@ -150,9 +133,7 @@ function Handlers.OnHammerSwing(_self: any, _player: Player, q: number, r: numbe
 	PlayHammerSwing(tableModel, q, r)
 end
 
-function Handlers.OnPenguinFall(_self: any, _loser: Player?): ()
-	-- TODO: VFX/SFX for penguin falling
-end
+function Handlers.OnPenguinFall(_self: any, _loser: Player?): () end
 
 function Handlers.OnRoundEnded(_self: any, aborted: boolean): ()
 	TableServiceClient.LastResult({ Aborted = aborted })
@@ -172,6 +153,7 @@ local function Cleanup(): ()
 	end
 
 	TableServiceClient.ActiveTable(nil)
+	TableServiceClient.ActiveSeat(nil)
 	TableServiceClient.RoundState("Idle")
 	TableServiceClient.CurrentTurnPlayer(nil)
 	TableServiceClient.LastResult(nil)
@@ -206,6 +188,7 @@ local function OnSeated(active: boolean, seatPart: Instance?): ()
 	local newNetworker = Networker.client.new(tableModel, Handlers)
 	activeNetworker = newNetworker
 	TableServiceClient.ActiveTable(tableModel)
+	TableServiceClient.ActiveSeat(seatPart :: Seat)
 
 	local stateSignal = newNetworker:getServerChangedSignal("State")
 	table.insert(

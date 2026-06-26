@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Debris = game:GetService("Debris")
 
 local Packages = ReplicatedStorage.Packages
@@ -7,13 +8,21 @@ local HexGrid = require(ReplicatedStorage.Source.Features.Tables.Utils.HexGrids)
 local Janitor = require(Packages.Janitor)
 local Networker = require(Packages.Networker)
 local Signal = require(Packages.Signal)
+local HexTemplate = ReplicatedStorage.Assets.Misc.Hexagon
 
-local HEX_RADIUS = 2
-local HEX_SIZE = 2.5
-local SUPPORT_RADIUS = 1
-local HIT_RADIUS = 1
 local HAMMER_SWING_TIME = 0.4
 local SEAT_RELOCK_DELAY = 3
+-- constants
+local HEX_RADIUS = 3
+local BASE_HEX_SIZE = 2.5 -- size the Hexagon asset was modeled at (flush, no gap)
+local HEX_SIZE = 0.5 -- ← lower this to shrink the whole board
+local TILE_GAP_SCALE = 0.9 -- ← lower this for a bigger seam between tiles
+local HIT_RADIUS = 1
+local BOARD_HEIGHT_OFFSET = 1 -- ↕ raise/lower so hexes rest flush on the table's surface (depends on your table model — tune this in Studio)
+local PENGUIN_SIZE = 1 -- ↓ lower this to shrink the penguin relative to the board
+local TILE_YAW_JITTER = math.rad(5) -- ± random spin per tile so the board doesn't look laser-cut/uniform
+local TILE_HEIGHT_JITTER = 0.04 -- ± random height wobble per tile, in studs
+local PENGUIN_FALL_DISTANCE = 3 -- ↓ how far the penguin must drop below its resting height before the round counts as over
 
 export type TableState = "Idle" | "InProgress" | "Ended"
 
@@ -21,7 +30,6 @@ type Hex = {
 	Part: BasePart,
 	Q: number,
 	R: number,
-	IsSupport: boolean,
 	Broken: boolean,
 }
 
@@ -37,10 +45,11 @@ export type Table = typeof(setmetatable(
 		OccupiedCount: number,
 		State: TableState,
 		Hexes: { [string]: Hex },
-		SupportRemaining: number,
 		Penguin: BasePart?,
 		TurnIndex: number,
 		_roundToken: number,
+		_penguinHasFallen: boolean,
+		_penguinRestY: number,
 		Janitor: Janitor.Janitor,
 		RoundJanitor: Janitor.Janitor,
 		Networker: any,
@@ -59,10 +68,11 @@ function TableServer.new(tableModel: Model): Table
 	self.OccupiedCount = 0
 	self.State = "Idle"
 	self.Hexes = {}
-	self.SupportRemaining = 0
 	self.Penguin = nil
 	self.TurnIndex = 1
 	self._roundToken = 0
+	self._penguinHasFallen = false
+	self._penguinRestY = 0
 	self.Janitor = Janitor.new()
 	self.RoundJanitor = Janitor.new()
 	self.Started = Signal.new()
@@ -163,59 +173,81 @@ end
 
 function TableServer._generateBoard(self: Table): ()
 	local pivot = self.Model:GetPivot()
-	local offset = Vector3.new(0, 5, 0)
+	local offset = Vector3.new(0, BOARD_HEIGHT_OFFSET, 0)
 
 	self.Hexes = {}
-	self.SupportRemaining = 0
+	self._penguinHasFallen = false
 
 	for _, coord in HexGrid.GenerateDisk(HEX_RADIUS) do
 		local key = HexGrid.Key(coord.Q, coord.R)
-		local distance = HexGrid.Distance(0, 0, coord.Q, coord.R)
-		local isSupport = distance <= SUPPORT_RADIUS
 
-		local part = Instance.new("Part")
-		part.Name = "Hex_" .. key
-		part.Size = Vector3.new(HEX_SIZE * 1.8, 1, HEX_SIZE * 1.8)
-		part.Anchored = true
-		part.Color = if isSupport then Color3.fromRGB(173, 216, 230) else Color3.fromRGB(220, 240, 250)
+		local hexPart = HexTemplate:Clone()
 
-		local localPos = HexGrid.AxialToWorld(coord.Q, coord.R, HEX_SIZE) + offset
-		part.CFrame = pivot * CFrame.new(localPos)
+		local randomYaw = (math.random() * 2 - 1) * TILE_YAW_JITTER
+		local randomHeightJitter = (math.random() * 2 - 1) * TILE_HEIGHT_JITTER
+		local localPos = HexGrid.AxialToWorld(coord.Q, coord.R, HEX_SIZE)
+			+ offset
+			+ Vector3.new(0, randomHeightJitter, 0)
 
-		self.RoundJanitor:Add(part)
-		part.Parent = self.Model
+		hexPart:PivotTo(
+			pivot * CFrame.new(localPos) * CFrame.Angles(math.rad(90), 0, 0) * CFrame.Angles(0, randomYaw, 0)
+		)
+		hexPart.Size *= (HEX_SIZE / BASE_HEX_SIZE) * TILE_GAP_SCALE
 
+		hexPart.Parent = self.Model
+		self.RoundJanitor:Add(hexPart)
+
+		local ICE_BLUE = Color3.fromRGB(173, 216, 230)
+		local DARK_BLUE = Color3.fromRGB(50, 100, 200)
+
+		if hexPart:IsA("BasePart") then
+			hexPart.Color = math.random() < 0.7 and ICE_BLUE or DARK_BLUE
+		end
 		local clickDetector = Instance.new("ClickDetector")
 		clickDetector.MaxActivationDistance = 20
-		clickDetector.Parent = part
+		clickDetector.Parent = hexPart
 
-		self.RoundJanitor:Add(clickDetector.MouseClick:Connect(function(player: Player)
+		self.RoundJanitor:Add(clickDetector.MouseClick:Connect(function(player)
 			self:_onHexClicked(key, player)
 		end))
 
 		self.Hexes[key] = {
-			Part = part,
+			Part = hexPart,
 			Q = coord.Q,
 			R = coord.R,
-			IsSupport = isSupport,
 			Broken = false,
 		}
-
-		if isSupport then
-			self.SupportRemaining += 1
-		end
 	end
 
 	local penguin = Instance.new("Part")
 	penguin.Name = "Penguin"
 	penguin.Shape = Enum.PartType.Ball
-	penguin.Size = Vector3.new(3, 3, 3)
+	penguin.Size = Vector3.new(PENGUIN_SIZE, PENGUIN_SIZE, PENGUIN_SIZE)
 	penguin.Color = Color3.fromRGB(245, 245, 245)
-	penguin.Anchored = true
-	penguin.CFrame = pivot * CFrame.new(offset + Vector3.new(0, 2.5, 0))
+	penguin.CanCollide = true
+	penguin.Anchored = false
+	penguin.CFrame = pivot * CFrame.new(offset + Vector3.new(0, PENGUIN_SIZE / 2 + 0.1, 0))
 	self.RoundJanitor:Add(penguin)
 	penguin.Parent = self.Model
 	self.Penguin = penguin
+
+	self._penguinRestY = offset.Y + PENGUIN_SIZE / 2 + 0.1
+	self:_startPenguinWatch()
+end
+
+function TableServer._startPenguinWatch(self: Table): ()
+	local pivot = self.Model:GetPivot()
+	local conn: RBXScriptConnection
+	conn = RunService.Heartbeat:Connect(function()
+		if not self.Penguin or self.State ~= "InProgress" then
+			return
+		end
+		local localY = pivot:PointToObjectSpace(self.Penguin.Position).Y
+		if localY < self._penguinRestY - PENGUIN_FALL_DISTANCE then
+			self:_penguinFalls()
+		end
+	end)
+	self.RoundJanitor:Add(conn, "Disconnect")
 end
 
 function TableServer._onHexClicked(self: Table, key: string, player: Player): ()
@@ -271,24 +303,18 @@ end
 
 function TableServer._breakHex(self: Table, hex: Hex): ()
 	hex.Broken = true
-	if hex.IsSupport then
-		self.SupportRemaining -= 1
-	end
 
 	local part = hex.Part
 	part.Anchored = false
 	part:ApplyImpulse(Vector3.new((math.random() - 0.5) * 20, -10, (math.random() - 0.5) * 20))
 	Debris:AddItem(part, 3)
-
-	if self.SupportRemaining <= 0 and self.State == "InProgress" then
-		self:_penguinFalls()
-	end
 end
 
 function TableServer._penguinFalls(self: Table): ()
-	if self.Penguin then
-		self.Penguin.Anchored = false
+	if not self.Penguin or self._penguinHasFallen then
+		return -- already triggered — don't fire this twice
 	end
+	self._penguinHasFallen = true
 
 	self.Networker:fireAll("OnPenguinFall", self:GetCurrentPlayer())
 
